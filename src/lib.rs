@@ -189,8 +189,8 @@ impl Eq for TfGraphNode {}
 
 #[derive(Clone, Debug)]
 struct TfBuffer {
-    child_transform_index: HashMap<String, HashSet<String>>,
-    transform_data: HashMap<TfGraphNode, TfIndividualTransformChain>,
+    pub child_transform_index: HashMap<String, HashSet<String>>,
+    pub transform_data: HashMap<TfGraphNode, TfIndividualTransformChain>,
 }
 
 fn strip_leading_slash(transform: &mut TransformStamped) {
@@ -618,7 +618,7 @@ mod test {
 /// Do note that unlike the C++ variant of the TfListener, only one TfListener can be created at a time. Like its C++ counterpart,
 /// it must be scoped to exist through the lifetime of the program. One way to do this is using an `Arc` or `RwLock`.
 pub struct TfListener {
-    buffer: Arc<RwLock<TfBuffer>>,
+    pub buffer: Arc<RwLock<TfBuffer>>,
     _static_subscriber: rosrust::Subscriber,
     _dynamic_subscriber: rosrust::Subscriber,
 }
