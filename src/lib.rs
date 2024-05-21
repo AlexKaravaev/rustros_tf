@@ -188,7 +188,7 @@ impl PartialEq for TfGraphNode {
 impl Eq for TfGraphNode {}
 
 #[derive(Clone, Debug)]
-struct TfBuffer {
+pub struct TfBuffer {
     pub child_transform_index: HashMap<String, HashSet<String>>,
     pub transform_data: HashMap<TfGraphNode, TfIndividualTransformChain>,
 }
