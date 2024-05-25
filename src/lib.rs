@@ -28,7 +28,7 @@ pub mod transforms;
 
 #[derive(Clone, Debug)]
 struct OrderedTF {
-    tf: TransformStamped,
+    pub tf: TransformStamped,
 }
 
 impl PartialEq for OrderedTF {
@@ -89,10 +89,10 @@ fn to_transform_stamped(
 
 #[derive(Clone, Debug)]
 struct TfIndividualTransformChain {
-    buffer_size: usize,
-    static_tf: bool,
+    pub buffer_size: usize,
+    pub static_tf: bool,
     //TODO:  Implement a circular buffer. Current method is slowww.
-    transform_chain: Vec<OrderedTF>,
+    pub transform_chain: Vec<OrderedTF>,
 }
 
 impl TfIndividualTransformChain {
@@ -175,8 +175,8 @@ impl TfIndividualTransformChain {
 
 #[derive(Clone, Debug, Hash)]
 struct TfGraphNode {
-    child: String,
-    parent: String,
+    pub child: String,
+    pub parent: String,
 }
 
 impl PartialEq for TfGraphNode {
