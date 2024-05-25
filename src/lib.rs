@@ -15,7 +15,7 @@
 //!     }
 //! }
 //!```
-use rosrust_msg::geometry_msgs::{Transform, TransformStamped};
+use rosrust_msg::geometry_msgs::{Transform, TransformStamped, Quaternion, Vector3};
 use rosrust_msg::std_msgs::Header;
 use rosrust_msg::tf2_msgs::TFMessage;
 use std::cmp::Ordering;
@@ -217,28 +217,58 @@ impl TfBuffer {
             self.add_transform(&transforms::get_inverse(&transform), static_tf);
         }
     }
+    
+
+    fn creates_cycle(&self, parent: &String, child: &String) -> bool {
+        let mut visited = HashSet::new();
+        let mut stack = VecDeque::new();
+        stack.push_back(child.clone());
+
+        while let Some(node) = stack.pop_back() {
+            if &node == parent {
+                return true;
+            }
+            if visited.contains(&node) {
+                continue;
+            }
+            visited.insert(node.clone());
+
+            if let Some(children) = self.child_transform_index.get(&node) {
+                for child in children {
+                    if !visited.contains(child) {
+                        stack.push_back(child.clone());
+                    }
+                }
+            }
+        }
+        false
+    }
 
     fn add_transform(&mut self, transform: &TransformStamped, static_tf: bool) {
-        //TODO: Detect is new transform will create a loop
-        if self
+        if !self
             .child_transform_index
             .contains_key(&transform.header.frame_id)
         {
-            let res = self
-                .child_transform_index
-                .get_mut(&transform.header.frame_id.clone())
-                .unwrap();
-            res.insert(transform.child_frame_id.clone());
-        } else {
             self.child_transform_index
                 .insert(transform.header.frame_id.clone(), HashSet::new());
-            let res = self
-                .child_transform_index
-                .get_mut(&transform.header.frame_id.clone())
-                .unwrap();
-            res.insert(transform.child_frame_id.clone());
+            
         }
 
+        // Extract the relevant mutable reference first
+        let frame_id = transform.header.frame_id.clone();
+        let child_frame_id = transform.child_frame_id.clone();
+        
+        let creates_cycle = self.creates_cycle(&frame_id, &child_frame_id);
+
+        if creates_cycle {
+            return;
+        }
+
+        // Now safely borrow mutably since creates_cycle borrow has ended
+        if let Some(res) = self.child_transform_index.get_mut(&frame_id) {
+            res.insert(child_frame_id);
+        }
+        
         let key = TfGraphNode {
             child: transform.child_frame_id.clone(),
             parent: transform.header.frame_id.clone(),
@@ -253,49 +283,71 @@ impl TfBuffer {
             self.transform_data.insert(key, data);
         }
     }
+    /// Helper function to find a path from `current_node` to `target_node`
+    fn find_path(
+        &self,
+        current_node: &str,
+        target_node: &str,
+        path: &mut Vec<String>,
+        visited: &mut HashSet<String>,
+    ) -> bool {
+        if !visited.insert(current_node.to_string()) {
+            return false;
+        }
+
+        path.push(current_node.to_string());
+
+        if current_node == target_node {
+            return true;
+        }
+
+        if let Some(children) = self.child_transform_index.get(current_node) {
+            for child in children {
+                if self.find_path(child, target_node, path, visited) {
+                    return true;
+                }
+            }
+        }
+
+        path.pop();
+        false
+    }
 
     /// Retrieves the transform path
     fn retrieve_transform_path(&self, from: String, to: String) -> Result<Vec<String>, TfError> {
-        let mut res = vec![];
-        let mut frontier: VecDeque<String> = VecDeque::new();
-        let mut visited: HashSet<String> = HashSet::new();
-        let mut parents: HashMap<String, String> = HashMap::new();
-        visited.insert(from.clone());
-        frontier.push_front(from.clone());
+        let mut path = Vec::new();
+        let mut visited = HashSet::new();
 
-        while !frontier.is_empty() {
-            let current_node = frontier.pop_front().unwrap();
-            if current_node == to {
-                break;
-            }
-            let children = self.child_transform_index.get(&current_node);
-            match children {
-                Some(children) => {
-                    for v in children {
-                        if visited.contains(&v.to_string()) {
-                            continue;
-                        }
-                        parents.insert(v.to_string(), current_node.clone());
-                        frontier.push_front(v.to_string());
-                        visited.insert(v.to_string());
+        if self.find_path(&from, &to, &mut path, &mut visited) {
+            Ok(path)
+        } else {
+            // If no direct path is found, search from possible roots
+            println!("---");
+            for root in self.child_transform_index.keys() {
+                let mut root_path = Vec::new();
+                let mut root_visited = HashSet::new();
+                let root_to = self.find_path(root, &to, &mut root_path, &mut root_visited);
+                
+                root_visited = HashSet::new();
+                let root_from = self.find_path(root, &from, &mut root_path, &mut root_visited);
+                println!("{}->{} {}", root, to, root_to);
+                println!("{}->{} {}", root, from, root_from);
+                
+                if root_from {
+                    root_path.pop(); // Remove the start_node from the end of the first path part
+                    if root_to {
+                        root_path.extend(path);
+                        println!("{}", root_path.join(" -> "));
+                        return Ok(root_path);
                     }
                 }
-                None => {}
             }
+            println!("---");
+            println!("No");
+            Err(TfError::CouldNotFindTransform)
         }
-        let mut r = to;
-        while r != from {
-            res.push(r.clone());
-            let parent = parents.get(&r);
-
-            match parent {
-                Some(x) => r = x.to_string(),
-                None => return Err(TfError::CouldNotFindTransform),
-            }
-        }
-        res.reverse();
-        Ok(res)
     }
+    
 
     /// Looks up a transform within the tree at a given time.
     pub fn lookup_transform(
@@ -304,43 +356,59 @@ impl TfBuffer {
         to: &str,
         time: rosrust::Time,
     ) -> Result<TransformStamped, TfError> {
-        let from = from.to_string();
-        let to = to.to_string();
-        let path = self.retrieve_transform_path(from.clone(), to.clone());
-
-        match path {
-            Ok(path) => {
-                let mut tflist: Vec<Transform> = Vec::new();
-                let mut first = from.clone();
-                for intermediate in path {
-                    let node = TfGraphNode {
-                        child: intermediate.clone(),
-                        parent: first.clone(),
-                    };
-                    let time_cache = self.transform_data.get(&node).unwrap();
-                    let transform = time_cache.get_closest_transform(time);
-                    match transform {
-                        Err(e) => return Err(e),
-                        Ok(x) => {
-                            tflist.push(x.transform);
-                        }
-                    }
-                    first = intermediate.clone();
-                }
-                let final_tf = transforms::chain_transforms(&tflist);
-                let msg = TransformStamped {
-                    child_frame_id: to.clone(),
-                    header: Header {
-                        frame_id: from.clone(),
-                        stamp: time,
-                        seq: 1,
-                    },
-                    transform: final_tf,
-                };
-                return Ok(msg);
-            }
-            Err(x) => return Err(x),
+        let mut from = from.to_string();
+        let mut to = to.to_string();
+        let mut inversed = false;
+        let mut path = self.retrieve_transform_path(from.clone(), to.clone());
+        
+        println!("{} {}", from, to);
+        if let Err(_) = path {
+            // Swap from and to and try again, we may have inverse transform available
+            std::mem::swap(&mut from, &mut to);
+            inversed = true;
+            path = self.retrieve_transform_path(from.clone(), to.clone());
+        }
+        println!("{} {}", from, to);
+        path = match path {
+            Ok(path) => Ok(path),
+            Err(e) => return Err(e), 
         };
+        println!("After" );
+
+        let mut tflist: Vec<Transform> = Vec::new();
+        let mut first = from.clone();
+
+        for intermediate in path.unwrap() {
+            let node = TfGraphNode {
+                child: intermediate.clone(),
+                parent: first.clone(),
+            };
+            let time_cache = self.transform_data.get(&node).unwrap();
+            let transform = time_cache.get_closest_transform(time);
+            match transform {
+                Err(e) => return Err(e),
+                Ok(x) => {
+                    tflist.push(x.transform);
+                }
+            }
+            first = intermediate.clone();
+        }
+        let final_tf = transforms::chain_transforms(&tflist);
+        let msg = TransformStamped {
+            child_frame_id: to.clone(),
+            header: Header {
+                frame_id: from.clone(),
+                stamp: time,
+                seq: 1,
+            },
+            transform: final_tf,
+        };
+        if inversed{
+            Ok(transforms::get_inverse(&msg))
+        }
+        else {
+            Ok(msg)
+        }
     }
 
     fn lookup_transform_with_time_travel(
@@ -463,7 +531,7 @@ mod test {
             },
         };
         buffer.add_transform(&base_link_to_camera, true);
-        buffer.add_transform(&get_inverse(&base_link_to_camera), true);
+        buffer.add_transform(&transforms::get_inverse(&base_link_to_camera), true);
     }
 
     /// Tests a basic lookup
