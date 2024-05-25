@@ -27,7 +27,7 @@ use std::sync::{Arc, RwLock};
 pub mod transforms;
 
 #[derive(Clone, Debug)]
-struct OrderedTF {
+pub struct OrderedTF {
     pub tf: TransformStamped,
 }
 
@@ -88,7 +88,7 @@ fn to_transform_stamped(
 }
 
 #[derive(Clone, Debug)]
-struct TfIndividualTransformChain {
+pub struct TfIndividualTransformChain {
     pub buffer_size: usize,
     pub static_tf: bool,
     //TODO:  Implement a circular buffer. Current method is slowww.
@@ -174,7 +174,7 @@ impl TfIndividualTransformChain {
 }
 
 #[derive(Clone, Debug, Hash)]
-struct TfGraphNode {
+pub struct TfGraphNode {
     pub child: String,
     pub parent: String,
 }
