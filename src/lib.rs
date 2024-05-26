@@ -15,7 +15,7 @@
 //!     }
 //! }
 //!```
-use rosrust_msg::geometry_msgs::{Transform, TransformStamped};
+use rosrust_msg::geometry_msgs::{Transform, TransformStamped, Quaternion, Vector3};
 use rosrust_msg::std_msgs::Header;
 use rosrust_msg::tf2_msgs::TFMessage;
 use std::cmp::Ordering;
@@ -190,6 +190,7 @@ impl Eq for TfGraphNode {}
 #[derive(Clone, Debug)]
 pub struct TfBuffer {
     pub child_transform_index: HashMap<String, HashSet<String>>,
+    pub child_transform_index_no_cycle: HashMap<String, HashSet<String>>,
     pub transform_data: HashMap<TfGraphNode, TfIndividualTransformChain>,
 }
 
@@ -206,6 +207,7 @@ impl TfBuffer {
     fn new() -> Self {
         TfBuffer {
             child_transform_index: HashMap::new(),
+            child_transform_index_no_cycle: HashMap::new(),
             transform_data: HashMap::new(),
         }
     }
@@ -217,9 +219,55 @@ impl TfBuffer {
             self.add_transform(&transforms::get_inverse(&transform), static_tf);
         }
     }
+    
+
+    fn creates_cycle(&self, parent: &String, child: &String) -> bool {
+        let mut visited = HashSet::new();
+        let mut stack = VecDeque::new();
+        stack.push_back(child.clone());
+
+        while let Some(node) = stack.pop_back() {
+            if &node == parent {
+                return true;
+            }
+            if visited.contains(&node) {
+                continue;
+            }
+            visited.insert(node.clone());
+
+            if let Some(children) = self.child_transform_index.get(&node) {
+                for child in children {
+                    if !visited.contains(child) {
+                        stack.push_back(child.clone());
+                    }
+                }
+            }
+        }
+        false
+    }
 
     fn add_transform(&mut self, transform: &TransformStamped, static_tf: bool) {
         //TODO: Detect is new transform will create a loop
+        if !self.creates_cycle(&transform.header.frame_id.clone(), &transform.child_frame_id) {
+            if self
+                .child_transform_index_no_cycle
+                .contains_key(&transform.header.frame_id)
+            {
+                let res = self
+                    .child_transform_index_no_cycle
+                    .get_mut(&transform.header.frame_id.clone())
+                    .unwrap();
+                res.insert(transform.child_frame_id.clone());
+            } else {
+                self.child_transform_index_no_cycle
+                    .insert(transform.header.frame_id.clone(), HashSet::new());
+                let res = self
+                    .child_transform_index_no_cycle
+                    .get_mut(&transform.header.frame_id.clone())
+                    .unwrap();
+                res.insert(transform.child_frame_id.clone());
+            }
+        }
         if self
             .child_transform_index
             .contains_key(&transform.header.frame_id)
@@ -463,7 +511,7 @@ mod test {
             },
         };
         buffer.add_transform(&base_link_to_camera, true);
-        buffer.add_transform(&get_inverse(&base_link_to_camera), true);
+        buffer.add_transform(&transforms::get_inverse(&base_link_to_camera), true);
     }
 
     /// Tests a basic lookup
@@ -564,7 +612,7 @@ mod test {
                     sec: 0,
                     nsec: 700_000_000,
                 },
-                seq: 0,
+                seq: 1,
             },
             transform: Transform {
                 rotation: Quaternion {
